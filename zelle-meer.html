@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zelle auf dem Meer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #e8f4f8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = Math.min(window.innerWidth, 800);
+canvas.height = Math.min(window.innerHeight, 500);
+const W = canvas.width;
+const H = canvas.height;
+
+const cellR = 46;
+const nucRX = 18;
+const nucRY = 13;
+
+// Sea surface baseline
+const seaBase = H * 0.58;
+
+// Wave composition: gentle base wave + slow large swell that occasionally lifts cell out
+let t = 0;
+const baseSpeed = 0.022;
+
+// Cell spring physics
+let cellY = seaBase - cellR * 0.5;
+let cellVY = 0;
+const cellK = 0.10;
+const cellD = 0.85;
+
+// Nucleus spring (lags behind cell)
+let nucOffY = 0;
+let nucVY = 0;
+const nucK = 0.045;
+const nucD = 0.80;
+
+// Nucleus tilt
+let nucTilt = 0;
+let nucTiltV = 0;
+
+const cellX = W * 0.5;
+
+// Wave function at a given x and time
+function waveY(x, time) {
+  // Main gentle wave
+  const w1 = Math.sin(x * 0.010 + time) * 18;
+  // Secondary ripple
+  const w2 = Math.sin(x * 0.022 - time * 1.3) * 7;
+  // Slow large swell — peaks every ~7 seconds, lifts cell fully out
+  const swell = Math.sin(time * 0.28) * 38;
+  return seaBase + w1 + w2 + swell;
+}
+
+// Surface Y directly under cell
+function getSurfaceY(time) {
+  return waveY(cellX, time);
+}
+
+// How deep the cell floats: normally half submerged
+// When moving fast upward, it can pop fully out
+function getCellTargetY(surfY, vy) {
+  // Normal rest: center sits at surfY - cellR*0.5 (half submerged)
+  // The faster the surface moves up, the more the cell gets pushed up
+  return surfY - cellR * 0.52;
+}
+
+function drawSky() {
+  const sky = ctx.createLinearGradient(0, 0, 0, seaBase);
+  sky.addColorStop(0, '#b8dff0');
+  sky.addColorStop(0.6, '#d6eef8');
+  sky.addColorStop(1, '#e8f6fc');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // Soft horizon glow
+  const hglow = ctx.createLinearGradient(0, seaBase - 60, 0, seaBase);
+  hglow.addColorStop(0, 'rgba(255,255,255,0)');
+  hglow.addColorStop(1, 'rgba(200,235,250,0.4)');
+  ctx.fillStyle = hglow;
+  ctx.fillRect(0, seaBase - 60, W, 60);
+
+  // A few soft clouds
+  drawCloud(W * 0.18, H * 0.12, 70, 28);
+  drawCloud(W * 0.72, H * 0.08, 90, 32);
+  drawCloud(W * 0.48, H * 0.18, 55, 20);
+}
+
+function drawCloud(cx, cy, rw, rh) {
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rw);
+  g.addColorStop(0, 'rgba(255,255,255,0.9)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rw, rh, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawSea(time) {
+  // Fill sea body
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(0, waveY(0, time));
+  for (let x = 0; x <= W; x += 3) {
+    ctx.lineTo(x, waveY(x, time));
+  }
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+
+  const seaGrad = ctx.createLinearGradient(0, seaBase - 50, 0, H);
+  seaGrad.addColorStop(0, '#6ecff5');
+  seaGrad.addColorStop(0.2, '#42b8e8');
+  seaGrad.addColorStop(0.6, '#1e90c8');
+  seaGrad.addColorStop(1, '#0a5f99');
+  ctx.fillStyle = seaGrad;
+  ctx.fill();
+
+  // Wave crest shimmer
+  ctx.beginPath();
+  ctx.moveTo(0, waveY(0, time));
+  for (let x = 0; x <= W; x += 3) {
+    ctx.lineTo(x, waveY(x, time));
+  }
+  ctx.strokeStyle = 'rgba(200, 240, 255, 0.6)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Second shimmer line below
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 3) {
+    const y = waveY(x, time) + 6 + Math.sin(x * 0.03 + time * 1.6) * 3;
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // Subsurface depth highlights
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    const dy = 30 + i * 22;
+    for (let x = 0; x <= W; x += 4) {
+      const y = waveY(x, time) + dy + Math.sin(x * 0.018 + time * 0.8 + i) * 8;
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = `rgba(255,255,255,${0.07 - i * 0.02})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawCellShadow(cy, surfY) {
+  // Shadow on water surface, fades as cell rises above
+  const dist = cy - surfY; // negative = cell above surface
+  const alpha = Math.max(0, 0.22 - Math.abs(dist) * 0.008);
+  if (alpha <= 0) return;
+  ctx.save();
+  const sg = ctx.createRadialGradient(cellX, surfY + 4, 0, cellX, surfY + 4, cellR * 0.9);
+  sg.addColorStop(0, `rgba(0, 60, 120, ${alpha})`);
+  sg.addColorStop(1, 'rgba(0, 60, 120, 0)');
+  ctx.beginPath();
+  ctx.ellipse(cellX, surfY + 4, cellR * 0.9, cellR * 0.22, 0, 0, Math.PI * 2);
+  ctx.fillStyle = sg;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCell(cy, surfY, nucOff) {
+  const submergedDepth = surfY - (cy + cellR); // how much below surface the bottom of cell is
+  // clip line: water surface
+  const clipY = surfY;
+
+  ctx.save();
+  ctx.translate(cellX, cy);
+
+  // --- Draw underwater part first (clipped below surface) ---
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-cellR * 2, clipY - cy, cellR * 4, H);
+  ctx.clip();
+
+  // Underwater tint overlay will be applied after cell is drawn
+  drawCellBody(nucOff, true);
+  ctx.restore();
+
+  // --- Draw above-water part ---
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-cellR * 2, -cellR * 2, cellR * 4, clipY - cy + cellR * 2);
+  ctx.clip();
+  drawCellBody(nucOff, false);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawCellBody(nucOff, underwater) {
+  // Outer glow
+  const glow = ctx.createRadialGradient(0, 0, cellR * 0.4, 0, 0, cellR * 1.6);
+  glow.addColorStop(0, 'rgba(255,140,30,0)');
+  glow.addColorStop(0.7, underwater ? 'rgba(255,120,10,0.06)' : 'rgba(255,120,10,0.12)');
+  glow.addColorStop(1, 'rgba(255,100,0,0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, cellR * 1.6, 0, Math.PI * 2);
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  // Cell body
+  const cellGrad = ctx.createRadialGradient(-cellR * 0.28, -cellR * 0.28, 2, 0, 0, cellR);
+  if (underwater) {
+    cellGrad.addColorStop(0, '#e8a840');
+    cellGrad.addColorStop(0.45, '#cc6010');
+    cellGrad.addColorStop(0.82, '#a84500');
+    cellGrad.addColorStop(1, '#8a3300');
+  } else {
+    cellGrad.addColorStop(0, '#ffbe5e');
+    cellGrad.addColorStop(0.45, '#f87c1a');
+    cellGrad.addColorStop(0.82, '#d95a00');
+    cellGrad.addColorStop(1, '#b84400');
+  }
+  ctx.beginPath();
+  ctx.arc(0, 0, cellR, 0, Math.PI * 2);
+  ctx.fillStyle = cellGrad;
+  ctx.fill();
+
+  // Nucleus (clipped inside cell)
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(0, 0, cellR - 3, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.rotate(nucTilt);
+
+  const ng = ctx.createRadialGradient(-nucRX * 0.3, nucOff - nucRY * 0.4, 1, 0, nucOff, nucRX);
+  ng.addColorStop(0, '#7a4a1e');
+  ng.addColorStop(0.5, '#5a3010');
+  ng.addColorStop(1, '#3a1c05');
+  ctx.beginPath();
+  ctx.ellipse(0, nucOff, nucRX, nucRY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = ng;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160,100,50,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.ellipse(-nucRX * 0.25, nucOff - nucRY * 0.3, nucRX * 0.3, nucRY * 0.22, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(180,130,80,0.28)';
+  ctx.fill();
+  ctx.restore();
+
+  // Membrane
+  ctx.beginPath();
+  ctx.arc(0, 0, cellR, 0, Math.PI * 2);
+  ctx.strokeStyle = underwater ? 'rgba(200,150,60,0.35)' : 'rgba(255,200,100,0.45)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Highlight (only above water)
+  if (!underwater) {
+    const hl = ctx.createRadialGradient(-cellR * 0.28, -cellR * 0.30, 0, -cellR * 0.28, -cellR * 0.30, cellR * 0.28);
+    hl.addColorStop(0, 'rgba(255,240,200,0.40)');
+    hl.addColorStop(1, 'rgba(255,200,100,0)');
+    ctx.beginPath();
+    ctx.arc(-cellR * 0.28, -cellR * 0.30, cellR * 0.28, 0, Math.PI * 2);
+    ctx.fillStyle = hl;
+    ctx.fill();
+  }
+}
+
+function drawWaterlineRipple(cy, surfY) {
+  // Small ripple/meniscus where cell meets water surface
+  const intersectDepth = surfY - cy; // positive means surface is below cell center
+  if (intersectDepth < -cellR || intersectDepth > cellR) return; // not intersecting
+
+  const halfChord = Math.sqrt(Math.max(0, cellR * cellR - intersectDepth * intersectDepth));
+  if (halfChord < 2) return;
+
+  ctx.save();
+  // Meniscus arc
+  ctx.beginPath();
+  ctx.ellipse(cellX, surfY, halfChord * 1.18, halfChord * 0.18, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Soft glow at waterline
+  const wg = ctx.createRadialGradient(cellX, surfY, 0, cellX, surfY, halfChord * 1.3);
+  wg.addColorStop(0, 'rgba(200,240,255,0.22)');
+  wg.addColorStop(1, 'rgba(200,240,255,0)');
+  ctx.beginPath();
+  ctx.ellipse(cellX, surfY, halfChord * 1.3, halfChord * 0.3, 0, 0, Math.PI * 2);
+  ctx.fillStyle = wg;
+  ctx.fill();
+  ctx.restore();
+}
+
+function loop() {
+  t += baseSpeed;
+
+  const surfY = getSurfaceY(t);
+  const targetCellY = getCellTargetY(surfY, cellVY);
+
+  // Cell spring
+  const cf = (targetCellY - cellY) * cellK;
+  cellVY = cellVY * cellD + cf;
+  cellY += cellVY;
+
+  // Nucleus lags cell movement
+  const nucTarget = cellVY * 2.5;
+  const nf = (nucTarget - nucOffY) * nucK;
+  nucVY = nucVY * nucD + nf;
+  nucOffY += nucVY;
+
+  // Nucleus tilt
+  const tiltTarget = cellVY * 0.013;
+  nucTiltV = (nucTiltV + (tiltTarget - nucTilt) * 0.07) * 0.87;
+  nucTilt += nucTiltV;
+
+  ctx.clearRect(0, 0, W, H);
+  drawSky();
+  drawSea(t);
+  drawCellShadow(cellY, surfY);
+  drawCell(cellY, surfY, nucOffY);
+  drawWaterlineRipple(cellY, surfY);
+
+  requestAnimationFrame(loop);
+}
+
+// Init
+cellY = getSurfaceY(0) - cellR * 0.52;
+loop();
+</script>
+</body>
+</html>

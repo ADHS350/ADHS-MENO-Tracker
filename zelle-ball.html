@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zelle auf dem Ball</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = Math.min(window.innerWidth, 700);
+canvas.height = Math.min(window.innerHeight, 560);
+const W = canvas.width;
+const H = canvas.height;
+
+// --- Constants ---
+const BALL_CX     = W / 2;
+const BALL_BASE_Y = H * 0.72;
+const BALL_R      = W * 0.28;
+const CELL_R      = 42;
+const NUC_RX      = 17;
+const NUC_RY      = 12;
+const PULSE_SPEED = 0.018;
+const PULSE_AMP   = 0.09;
+
+// --- State ---
+let t = 0;
+
+let cellY  = 0;
+let cellVY = 0;
+const CELL_K = 0.12;
+const CELL_D = 0.84;
+
+let nucOffY = 0;
+let nucVY   = 0;
+const NUC_K = 0.05;
+const NUC_D = 0.80;
+
+let nucTilt  = 0;
+let nucTiltV = 0;
+
+// --- Helpers ---
+function getPressure(time) {
+  return 0.5 + 0.5 * Math.sin(time);
+}
+
+function getBallShape(pressure) {
+  const scaleY = 1.0 - PULSE_AMP + pressure * PULSE_AMP * 2;
+  const scaleX = 1.0 + (1.0 - scaleY) * 0.45;
+  return { scaleX, scaleY };
+}
+
+function getBallTopY(pressure) {
+  const { scaleY } = getBallShape(pressure);
+  return BALL_BASE_Y - BALL_R * scaleY;
+}
+
+// --- Draw functions ---
+function drawBackground() {
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#1a1a2e');
+  bg.addColorStop(1, '#16213e');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  const floorY = H * 0.94;
+  const fg = ctx.createLinearGradient(0, floorY - 10, 0, floorY + 20);
+  fg.addColorStop(0, 'rgba(0,0,0,0)');
+  fg.addColorStop(0.5, 'rgba(0,0,0,0.25)');
+  fg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = fg;
+  ctx.fillRect(0, floorY - 10, W, 30);
+}
+
+function drawBallShadow(pressure) {
+  const { scaleX } = getBallShape(pressure);
+  const shadowRX = BALL_R * scaleX * 0.85;
+  const shadowRY = shadowRX * 0.18;
+  const shadowY  = H * 0.945;
+  const alpha    = 0.18 + (1 - pressure) * 0.12;
+  const g = ctx.createRadialGradient(BALL_CX, shadowY, 0, BALL_CX, shadowY, shadowRX);
+  g.addColorStop(0, `rgba(0,0,0,${alpha})`);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(BALL_CX, shadowY, shadowRX, shadowRY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBall(pressure) {
+  const { scaleX, scaleY } = getBallShape(pressure);
+  const rX = BALL_R * scaleX;
+  const rY = BALL_R * scaleY;
+
+  ctx.save();
+  ctx.translate(BALL_CX, BALL_BASE_Y);
+
+  const glow = ctx.createRadialGradient(0, 0, rX * 0.5, 0, 0, rX * 1.2);
+  glow.addColorStop(0, 'rgba(100,200,255,0.0)');
+  glow.addColorStop(0.8, 'rgba(80,180,240,0.08)');
+  glow.addColorStop(1, 'rgba(60,160,220,0.0)');
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rX * 1.2, rY * 1.2, 0, 0, Math.PI * 2);
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  const bg = ctx.createRadialGradient(-rX * 0.25, -rY * 0.3, rX * 0.05, 0, 0, rX);
+  bg.addColorStop(0,    '#d0f0ff');
+  bg.addColorStop(0.3,  '#7fd4f5');
+  bg.addColorStop(0.65, '#3ab0e8');
+  bg.addColorStop(0.88, '#1a8acc');
+  bg.addColorStop(1,    '#0e6aaa');
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rX, rY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = bg;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rX, rY, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(180,230,255,0.35)';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  const hl = ctx.createRadialGradient(-rX * 0.22, -rY * 0.28, 0, -rX * 0.22, -rY * 0.28, rX * 0.22);
+  hl.addColorStop(0, 'rgba(255,255,255,0.55)');
+  hl.addColorStop(1, 'rgba(255,255,255,0.0)');
+  ctx.beginPath();
+  ctx.ellipse(-rX * 0.22, -rY * 0.28, rX * 0.22, rY * 0.14, -0.3, 0, Math.PI * 2);
+  ctx.fillStyle = hl;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.ellipse(rX * 0.3, rY * 0.35, rX * 0.08, rY * 0.05, 0.4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawDent(pressure) {
+  const { scaleY } = getBallShape(pressure);
+  const topY      = BALL_BASE_Y - BALL_R * scaleY;
+  const dentDepth = (1 - pressure) * 3 + 4;
+  const dentW     = CELL_R * 0.9;
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(BALL_CX, topY + dentDepth * 0.5, dentW, dentDepth * 0.7, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(10,80,130,0.25)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCell(cy, nucOff) {
+  ctx.save();
+  ctx.translate(BALL_CX, cy);
+
+  const glow = ctx.createRadialGradient(0, 0, CELL_R * 0.4, 0, 0, CELL_R * 1.6);
+  glow.addColorStop(0,   'rgba(255,140,30,0)');
+  glow.addColorStop(0.7, 'rgba(255,120,10,0.10)');
+  glow.addColorStop(1,   'rgba(255,100,0,0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, CELL_R * 1.6, 0, Math.PI * 2);
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  const cg = ctx.createRadialGradient(-CELL_R * 0.3, -CELL_R * 0.3, 2, 0, 0, CELL_R);
+  cg.addColorStop(0,    '#ffbe5e');
+  cg.addColorStop(0.45, '#f87c1a');
+  cg.addColorStop(0.82, '#d95a00');
+  cg.addColorStop(1,    '#b84400');
+  ctx.beginPath();
+  ctx.arc(0, 0, CELL_R, 0, Math.PI * 2);
+  ctx.fillStyle = cg;
+  ctx.fill();
+
+  // Nucleus clipped inside cell
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(0, 0, CELL_R - 3, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.rotate(nucTilt);
+
+  const ng = ctx.createRadialGradient(-NUC_RX * 0.3, nucOff - NUC_RY * 0.4, 1, 0, nucOff, NUC_RX);
+  ng.addColorStop(0,   '#7a4a1e');
+  ng.addColorStop(0.5, '#5a3010');
+  ng.addColorStop(1,   '#3a1c05');
+  ctx.beginPath();
+  ctx.ellipse(0, nucOff, NUC_RX, NUC_RY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = ng;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160,100,50,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.ellipse(-NUC_RX * 0.25, nucOff - NUC_RY * 0.3, NUC_RX * 0.3, NUC_RY * 0.22, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(180,130,80,0.28)';
+  ctx.fill();
+  ctx.restore();
+
+  // Membrane
+  ctx.beginPath();
+  ctx.arc(0, 0, CELL_R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,200,100,0.45)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Highlight
+  const hl = ctx.createRadialGradient(-CELL_R * 0.28, -CELL_R * 0.30, 0, -CELL_R * 0.28, -CELL_R * 0.30, CELL_R * 0.28);
+  hl.addColorStop(0, 'rgba(255,240,200,0.38)');
+  hl.addColorStop(1, 'rgba(255,200,100,0)');
+  ctx.beginPath();
+  ctx.arc(-CELL_R * 0.28, -CELL_R * 0.30, CELL_R * 0.28, 0, Math.PI * 2);
+  ctx.fillStyle = hl;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// --- Main loop ---
+function loop() {
+  t += PULSE_SPEED;
+
+  const pressure    = getPressure(t);
+  const ballTopY    = getBallTopY(pressure);
+  const cellTargetY = ballTopY - CELL_R + 4 * (1 - pressure);
+
+  cellVY = cellVY * CELL_D + (cellTargetY - cellY) * CELL_K;
+  cellY += cellVY;
+
+  const nucTarget = cellVY * 2.2;
+  nucVY   = nucVY * NUC_D + (nucTarget - nucOffY) * NUC_K;
+  nucOffY += nucVY;
+
+  const tiltTarget = cellVY * 0.016;
+  nucTiltV = (nucTiltV + (tiltTarget - nucTilt) * 0.07) * 0.87;
+  nucTilt += nucTiltV;
+
+  ctx.clearRect(0, 0, W, H);
+  drawBackground();
+  drawBallShadow(pressure);
+  drawBall(pressure);
+  drawDent(pressure);
+  drawCell(cellY, nucOffY);
+
+  requestAnimationFrame(loop);
+}
+
+// Init
+cellY = getBallTopY(0.5) - CELL_R;
+loop();
+</script>
+</body>
+</html>

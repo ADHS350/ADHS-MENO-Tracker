@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zelle auf der Welle</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a1628;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+canvas.width = Math.min(window.innerWidth, 800);
+canvas.height = Math.min(window.innerHeight, 500);
+
+const W = canvas.width;
+const H = canvas.height;
+
+// Physics parameters
+const waveAmplitude = 38;
+const waveFrequency = 0.012;
+const waveSpeed = 0.022;
+
+// Cell follows wave with slight lag (phase offset)
+const cellLag = 0.18;       // phase behind wave
+const nucleusLag = 0.52;    // phase behind wave (more lag)
+
+const cellRadius = 52;
+const nucleusRX = 20;
+const nucleusRY = 14;
+
+let t = 0;
+
+// Smooth trailing values for nucleus position (spring physics)
+let nucleusY = H / 2;
+let nucleusVY = 0;
+const nucleusStiffness = 0.04;
+const nucleusDamping = 0.82;
+
+// Cell spring
+let cellY = H / 2;
+let cellVY = 0;
+const cellStiffness = 0.09;
+const cellDamping = 0.86;
+
+// Nucleus tilt angle (wobbles slightly)
+let nucleusTilt = 0;
+let nucleusTiltV = 0;
+
+const cellX = W * 0.5;
+const waveY = H * 0.62;
+
+function getWaveY(x, time) {
+  return waveY + Math.sin(x * waveFrequency + time) * waveAmplitude
+       + Math.sin(x * waveFrequency * 1.7 + time * 0.6) * waveAmplitude * 0.25;
+}
+
+function drawWave(time) {
+  // Deep background water fill
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(0, getWaveY(0, time));
+  for (let x = 0; x <= W; x += 2) {
+    ctx.lineTo(x, getWaveY(x, time));
+  }
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+
+  // Water gradient
+  const waterGrad = ctx.createLinearGradient(0, waveY - waveAmplitude, 0, H);
+  waterGrad.addColorStop(0, 'rgba(70, 180, 220, 0.85)');
+  waterGrad.addColorStop(0.3, 'rgba(40, 140, 190, 0.90)');
+  waterGrad.addColorStop(1, 'rgba(15, 80, 130, 0.95)');
+  ctx.fillStyle = waterGrad;
+  ctx.fill();
+
+  // Wave shimmer line
+  ctx.beginPath();
+  ctx.moveTo(0, getWaveY(0, time));
+  for (let x = 0; x <= W; x += 2) {
+    ctx.lineTo(x, getWaveY(x, time));
+  }
+  ctx.strokeStyle = 'rgba(180, 230, 255, 0.55)';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // Secondary shimmer
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 2) {
+    const y = getWaveY(x, time) - 6 + Math.sin(x * 0.03 + time * 1.3) * 3;
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(220, 245, 255, 0.25)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCell(cx, cy, tilt) {
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  // Outer glow
+  const glow = ctx.createRadialGradient(0, 0, cellRadius * 0.4, 0, 0, cellRadius * 1.5);
+  glow.addColorStop(0, 'rgba(255, 140, 30, 0.0)');
+  glow.addColorStop(0.7, 'rgba(255, 120, 10, 0.12)');
+  glow.addColorStop(1, 'rgba(255, 100, 0, 0.0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius * 1.5, 0, Math.PI * 2);
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  // Cell body gradient
+  const cellGrad = ctx.createRadialGradient(-cellRadius * 0.3, -cellRadius * 0.3, 2, 0, 0, cellRadius);
+  cellGrad.addColorStop(0, '#ffbe5e');
+  cellGrad.addColorStop(0.45, '#f87c1a');
+  cellGrad.addColorStop(0.82, '#d95a00');
+  cellGrad.addColorStop(1, '#b84400');
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius, 0, Math.PI * 2);
+  ctx.fillStyle = cellGrad;
+  ctx.fill();
+
+  // Cell membrane ring
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255, 200, 100, 0.45)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Inner highlight
+  ctx.beginPath();
+  ctx.arc(-cellRadius * 0.28, -cellRadius * 0.30, cellRadius * 0.28, 0, Math.PI * 2);
+  const hl = ctx.createRadialGradient(
+    -cellRadius * 0.28, -cellRadius * 0.30, 0,
+    -cellRadius * 0.28, -cellRadius * 0.30, cellRadius * 0.28
+  );
+  hl.addColorStop(0, 'rgba(255, 240, 200, 0.38)');
+  hl.addColorStop(1, 'rgba(255, 200, 100, 0.0)');
+  ctx.fillStyle = hl;
+  ctx.fill();
+
+  // Nucleus
+  ctx.save();
+  ctx.rotate(tilt);
+  const nucGrad = ctx.createRadialGradient(-nucleusRX * 0.3, -nucleusRY * 0.4, 1, 0, 0, nucleusRX);
+  nucGrad.addColorStop(0, '#7a4a1e');
+  nucGrad.addColorStop(0.5, '#5a3010');
+  nucGrad.addColorStop(1, '#3a1c05');
+  ctx.beginPath();
+  ctx.ellipse(0, 0, nucleusRX, nucleusRY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = nucGrad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160, 100, 50, 0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Nucleus highlight
+  ctx.beginPath();
+  ctx.ellipse(-nucleusRX * 0.25, -nucleusRY * 0.3, nucleusRX * 0.3, nucleusRY * 0.25, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(180, 130, 80, 0.28)';
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawBackground() {
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#0a1628');
+  sky.addColorStop(0.55, '#0d2244');
+  sky.addColorStop(1, '#0f2a50');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle stars
+  ctx.save();
+  for (let i = 0; i < 38; i++) {
+    const sx = (Math.sin(i * 137.5) * 0.5 + 0.5) * W;
+    const sy = (Math.cos(i * 97.3) * 0.5 + 0.5) * (H * 0.52);
+    const sr = 0.5 + (Math.sin(i * 53.1) * 0.5 + 0.5) * 1.2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(200, 220, 255, ${0.3 + (Math.sin(i * 73.7) * 0.5 + 0.5) * 0.5})`;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function animate() {
+  t += waveSpeed;
+
+  // Target: where the wave surface is at cellX
+  const waveTarget = getWaveY(cellX, t) - cellRadius - 2;
+
+  // Cell spring toward wave surface
+  const cellForce = (waveTarget - cellY) * cellStiffness;
+  cellVY = cellVY * cellDamping + cellForce;
+  cellY += cellVY;
+
+  // Nucleus spring toward cell center (which itself moves)
+  const nucleusTarget = cellY + Math.sin(t - nucleusLag * 8) * 6;
+  const nucForce = (nucleusTarget - nucleusY) * nucleusStiffness;
+  nucleusVY = nucleusVY * nucleusDamping + nucForce;
+  nucleusY += nucleusVY;
+
+  // Nucleus tilt follows velocity
+  const tiltTarget = cellVY * 0.018;
+  const tiltForce = (tiltTarget - nucleusTilt) * 0.06;
+  nucleusTiltV = nucleusTiltV * 0.88 + tiltForce;
+  nucleusTilt += nucleusTiltV;
+
+  // Nucleus offset relative to cell
+  const nucleusOffsetY = nucleusY - cellY;
+
+  ctx.clearRect(0, 0, W, H);
+  drawBackground();
+  drawWave(t);
+  drawCell(cellX, cellY, nucleusTilt);
+
+  // Draw the nucleus at its spring-offset position
+  // (we overdraw by calling drawCell with the nucleus offset baked in via translate)
+  // Actually nucleus is drawn inside drawCell at (0,0) relative to cell.
+  // Let's redraw just the nucleus at the offset position:
+  ctx.save();
+  ctx.translate(cellX, cellY);
+  ctx.rotate(nucleusTilt);
+
+  // Clip to cell
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius - 3, 0, Math.PI * 2);
+  ctx.clip();
+
+  const nucGrad = ctx.createRadialGradient(
+    -nucleusRX * 0.3 + 0, -nucleusRY * 0.4 + nucleusOffsetY,
+    1,
+    0, nucleusOffsetY, nucleusRX
+  );
+  nucGrad.addColorStop(0, '#7a4a1e');
+  nucGrad.addColorStop(0.5, '#5a3010');
+  nucGrad.addColorStop(1, '#3a1c05');
+  ctx.beginPath();
+  ctx.ellipse(0, nucleusOffsetY, nucleusRX, nucleusRY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = nucGrad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160, 100, 50, 0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Nucleus highlight
+  ctx.beginPath();
+  ctx.ellipse(-nucleusRX * 0.25, nucleusOffsetY - nucleusRY * 0.3, nucleusRX * 0.3, nucleusRY * 0.25, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(180, 130, 80, 0.28)';
+  ctx.fill();
+
+  ctx.restore();
+
+  requestAnimationFrame(animate);
+}
+
+// Refactored: draw nucleus separately with offset
+// Let me redo the draw pipeline cleanly
+
+function drawScene() {
+  ctx.clearRect(0, 0, W, H);
+  drawBackground();
+  drawWave(t);
+
+  // Cell (without nucleus inside)
+  ctx.save();
+  ctx.translate(cellX, cellY);
+
+  // Outer glow
+  const glow = ctx.createRadialGradient(0, 0, cellRadius * 0.4, 0, 0, cellRadius * 1.5);
+  glow.addColorStop(0, 'rgba(255, 140, 30, 0.0)');
+  glow.addColorStop(0.7, 'rgba(255, 120, 10, 0.12)');
+  glow.addColorStop(1, 'rgba(255, 100, 0, 0.0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius * 1.5, 0, Math.PI * 2);
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  // Body
+  const cellGrad = ctx.createRadialGradient(-cellRadius * 0.3, -cellRadius * 0.3, 2, 0, 0, cellRadius);
+  cellGrad.addColorStop(0, '#ffbe5e');
+  cellGrad.addColorStop(0.45, '#f87c1a');
+  cellGrad.addColorStop(0.82, '#d95a00');
+  cellGrad.addColorStop(1, '#b84400');
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius, 0, Math.PI * 2);
+  ctx.fillStyle = cellGrad;
+  ctx.fill();
+
+  // Nucleus (offset from cell center, clipped inside cell)
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius - 3, 0, Math.PI * 2);
+  ctx.clip();
+
+  const noy = nucleusY - cellY; // nucleus offset relative to cell
+  ctx.rotate(nucleusTilt);
+
+  const nucGrad = ctx.createRadialGradient(
+    -nucleusRX * 0.3, -nucleusRY * 0.4 + noy, 1,
+    0, noy, nucleusRX
+  );
+  nucGrad.addColorStop(0, '#7a4a1e');
+  nucGrad.addColorStop(0.5, '#5a3010');
+  nucGrad.addColorStop(1, '#3a1c05');
+  ctx.beginPath();
+  ctx.ellipse(0, noy, nucleusRX, nucleusRY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = nucGrad;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160, 100, 50, 0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Nucleus highlight
+  ctx.beginPath();
+  ctx.ellipse(-nucleusRX * 0.25, noy - nucleusRY * 0.3, nucleusRX * 0.3, nucleusRY * 0.22, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(180, 130, 80, 0.28)';
+  ctx.fill();
+
+  ctx.restore();
+
+  // Cell membrane
+  ctx.beginPath();
+  ctx.arc(0, 0, cellRadius, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255, 200, 100, 0.45)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  // Cell highlight
+  ctx.beginPath();
+  ctx.arc(-cellRadius * 0.28, -cellRadius * 0.30, cellRadius * 0.28, 0, Math.PI * 2);
+  const hl = ctx.createRadialGradient(
+    -cellRadius * 0.28, -cellRadius * 0.30, 0,
+    -cellRadius * 0.28, -cellRadius * 0.30, cellRadius * 0.28
+  );
+  hl.addColorStop(0, 'rgba(255, 240, 200, 0.38)');
+  hl.addColorStop(1, 'rgba(255, 200, 100, 0.0)');
+  ctx.fillStyle = hl;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function loop() {
+  t += waveSpeed;
+
+  const waveTarget = getWaveY(cellX, t) - cellRadius - 4;
+
+  const cellForce = (waveTarget - cellY) * cellStiffness;
+  cellVY = cellVY * cellDamping + cellForce;
+  cellY += cellVY;
+
+  const nucleusTarget = cellY + Math.sin(t * 0.7) * 4;
+  const nucForce = (nucleusTarget - nucleusY) * nucleusStiffness;
+  nucleusVY = nucleusVY * nucleusDamping + nucForce;
+  nucleusY += nucleusVY;
+
+  const tiltTarget = cellVY * 0.016;
+  const tiltForce = (tiltTarget - nucleusTilt) * 0.06;
+  nucleusTiltV = nucleusTiltV * 0.88 + tiltForce;
+  nucleusTilt += nucleusTiltV;
+
+  drawScene();
+  requestAnimationFrame(loop);
+}
+
+// Init positions
+cellY = getWaveY(cellX, 0) - cellRadius - 4;
+nucleusY = cellY;
+
+loop();
+</script>
+</body>
+</html>
